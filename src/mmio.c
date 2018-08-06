@@ -40,6 +40,33 @@
 
 /**
  * @internal
+ * Convert an MMIO type to a string
+ *
+ * @param type the type to convert
+ * @return the string equivalent of the type
+ */
+static const char *ocxl_mmio_type_to_str(ocxl_mmio_type type)
+{
+	switch (type) {
+	case OCXL_GLOBAL_MMIO:
+		return "global MMIO";
+
+	case OCXL_PER_PASID_MMIO:
+		return "per-PASID MMIO";
+
+	case OCXL_LPC_SYSTEM_MEM:
+		return "LPC system memory";
+
+	case OCXL_LPC_SPECIAL_PURPOSE_MEM:
+		return "Special purpose memory";
+
+	default:
+		return "Unknown";
+	}
+}
+
+/**
+ * @internal
  *
  * Save a mapped MMIO region against an AFU.
  *
@@ -83,8 +110,8 @@ static ocxl_err register_mmio(ocxl_afu *afu, void *addr, size_t size, ocxl_mmio_
 
 	*handle = &afu->mmios[available_mmio];
 
-	TRACE(afu, "Mapped %ld bytes of %s MMIO at %p",
-	      size, type == OCXL_GLOBAL_MMIO ? "Global" : "Per-PASID", addr);
+	TRACE(afu, "Mapped %ld bytes of %s at %p",
+	      size, ocxl_mmio_type_to_str(type), addr);
 
 	return OCXL_OK;
 }
@@ -102,18 +129,78 @@ ocxl_err global_mmio_open(ocxl_afu *afu)
 	int length = snprintf(path, sizeof(path), "%s/global_mmio_area", afu->sysfs_path);
 	if (length >= (int)sizeof(path)) {
 		ocxl_err rc = OCXL_NO_DEV;
-		errmsg(afu, rc, "global MMIO path truncated");
+		errmsg(NULL, rc, "global MMIO path truncated");
 		return rc;
 	}
 
 	int fd = open(path, O_RDWR | O_CLOEXEC);
 	if (fd < 0) {
 		ocxl_err rc = OCXL_NO_DEV;
-		errmsg(afu, rc, "Could not open global MMIO '%s': Error %d: %s", path, errno, strerror(errno));
+		errmsg(NULL, rc, "Could not open global MMIO '%s': Error %d: %s", path, errno, strerror(errno));
 		return rc;
 	}
 
 	afu->global_mmio_fd = fd;
+
+	return OCXL_OK;
+}
+
+/**
+ * Open the LPC memory descriptor on an AFU.
+ *
+ * @param afu the AFU
+ *
+ * @retval OCXL_NO_DEV if the descriptor could not be opened
+ */
+ocxl_err lpc_system_mem_open(ocxl_afu *afu)
+{
+	char path[PATH_MAX + 1];
+	int length = snprintf(path, sizeof(path), "%s/lpc_system_memory", afu->sysfs_path);
+	if (length >= (int)sizeof(path)) {
+		ocxl_err rc = OCXL_NO_DEV;
+		errmsg(NULL, rc, "LPC mem path path truncated");
+		return rc;
+	}
+
+	int fd = open(path, O_RDWR | O_CLOEXEC);
+	if (fd < 0) {
+		ocxl_err rc = OCXL_NO_DEV;
+		errmsg(NULL, rc, "Could not open LPC mem '%s': Error %d: %s", path, errno, strerror(errno));
+		return rc;
+	}
+
+	afu->lpc_mem_fd = fd;
+	TRACE(afu, "LPC system memory fd=%d", fd);
+
+	return OCXL_OK;
+}
+
+/**
+ * Open the special purpose memory descriptor on an AFU.
+ *
+ * @param afu the AFU
+ *
+ * @retval OCXL_NO_DEV if the descriptor could not be opened
+ */
+ocxl_err lpc_special_purpose_mem_open(ocxl_afu *afu)
+{
+	char path[PATH_MAX + 1];
+	int length = snprintf(path, sizeof(path), "%s/lpc_special_purpose_memory", afu->sysfs_path);
+	if (length >= (int)sizeof(path)) {
+		ocxl_err rc = OCXL_NO_DEV;
+		errmsg(NULL, rc, "Special purpose mem path path truncated");
+		return rc;
+	}
+
+	int fd = open(path, O_RDWR | O_CLOEXEC);
+	if (fd < 0) {
+		ocxl_err rc = OCXL_NO_DEV;
+		errmsg(NULL, rc, "Could not open special purpose mem '%s': Error %d: %s", path, errno, strerror(errno));
+		return rc;
+	}
+
+	afu->special_purpose_mem_fd = fd;
+	TRACE(afu, "LPC special purpose memory fd=%d", fd);
 
 	return OCXL_OK;
 }
@@ -240,6 +327,90 @@ static ocxl_err mmio_map(ocxl_afu *afu, size_t size, int prot, uint64_t flags, o
 }
 
 /**
+ * @internal
+ *
+ * Map the LPC system/special purpose memory of an AFU to memory.
+ *
+ * Map the LPC system/special purpose memory area of AFU to the current process memory. The size and
+ * contents of this area are specific each AFU. The size can be discovered with
+ * ocxl_mmio_size().
+ *
+ * @pre the AFU has been opened
+ *
+ * @param afu the AFU to operate on
+ * @param type the type of memory to map
+ * @param size the size of the MMIO region to map (or 0 to map the full region)
+ * @param prot the protection parameters as per mmap/mprotect
+ * @param flags Additional flags to modify the map behavior (currently unused, must be 0)
+ * @param offset the offset of the MMIO region to map (or 0 to map the full region), should be a multiple of PAGE_SIZE
+ * @param[out] region the MMIO region handle
+ *
+ * @retval OCXL_OK on success
+ * @retval OCXL_NO_MEM if there is insufficient memory
+ * @retval OCXL_NO_DEV if the MMIO device could not be opened
+ * @retval OCXL_INVALID_ARGS if the flags are not valid
+ */
+static ocxl_err lpc_mem_map(ocxl_afu *afu, ocxl_mmio_type type, size_t size, int prot, uint64_t flags, off_t offset,
+                            ocxl_mmio_h *region) // static function extraction hack
+{
+	ocxl_mmio_area *area;
+	int fd = -1;
+	ocxl_err rc;
+
+	switch (type) {
+	case OCXL_LPC_SYSTEM_MEM:
+		area = &afu->lpc_mem;
+		fd = afu->lpc_mem_fd;
+		break;
+
+	case OCXL_LPC_SPECIAL_PURPOSE_MEM:
+		area = &afu->special_purpose_mem;
+		fd = afu->special_purpose_mem_fd;
+		break;
+
+	default:
+		rc = OCXL_INTERNAL_ERROR;
+		errmsg(afu, rc, "Unknown type %d", type);
+		return rc;
+	}
+
+	if (offset + size > area->length) {
+		rc = OCXL_NO_MEM;
+		errmsg(afu, rc, "Offset(%#x) + size(%#x) of lpc memory map request exceeds available size of %#x",
+		       offset, size, area->length);
+		return rc;
+	}
+
+	if (flags) {
+		ocxl_err rc = OCXL_INVALID_ARGS;
+		errmsg(afu, rc, "LPC memory flags of 0x%llx is not supported by this version of libocxl", flags);
+		return rc;
+	}
+
+	TRACE(afu, "mmap(NULL, %lu, %#x, MAP_SHARED, %d, %lu);",
+			size, prot, fd, offset);
+	void *addr = mmap(NULL, size, prot, MAP_SHARED, fd, offset);
+	if (addr == MAP_FAILED) {
+		ocxl_err rc = OCXL_NO_MEM;
+		errmsg(afu, rc, "Could not map LPC memory, %d: %s", errno, strerror(errno));
+		return rc;
+	}
+
+	ocxl_mmio_h mmio_region;
+	rc = register_mmio(afu, addr, size, type, &mmio_region);
+	if (rc != OCXL_OK) {
+		errmsg(afu, rc, "Could not register LPC region");
+		munmap(addr, size);
+		return rc;
+	}
+
+	*region = mmio_region;
+
+	return OCXL_OK;
+}
+
+
+/**
  * Map an MMIO area of an AFU.
  *
  * Provides finer grain control of MMIO region mapping. Allows for protection parameters
@@ -273,6 +444,12 @@ ocxl_err ocxl_mmio_map_advanced(ocxl_afu_h afu, ocxl_mmio_type type, size_t size
 		case OCXL_GLOBAL_MMIO:
 			size = afu->global_mmio.length;
 			break;
+		case OCXL_LPC_SYSTEM_MEM:
+			size = afu->lpc_mem_size;
+			break;
+		case OCXL_LPC_SPECIAL_PURPOSE_MEM:
+			size = afu->special_purpose_mem_size;
+			break;
 		}
 
 		size -= offset;
@@ -296,6 +473,10 @@ ocxl_err ocxl_mmio_map_advanced(ocxl_afu_h afu, ocxl_mmio_type type, size_t size
 			return rc;
 		}
 		return mmio_map(afu, size, prot, flags, offset, region);
+
+	case OCXL_LPC_SYSTEM_MEM:
+	case OCXL_LPC_SPECIAL_PURPOSE_MEM:
+		return lpc_mem_map(afu, type, size, prot, flags, offset, region);
 
 	default:
 		errmsg(afu, rc, "Unknown MMIO type %d", type);
@@ -366,6 +547,12 @@ int ocxl_mmio_get_fd(ocxl_afu_h afu, ocxl_mmio_type type)
 	case OCXL_PER_PASID_MMIO:
 		return afu->fd;
 
+	case OCXL_LPC_SYSTEM_MEM:
+		return afu->lpc_mem_fd;
+
+	case OCXL_LPC_SPECIAL_PURPOSE_MEM:
+		return afu->special_purpose_mem_fd;
+
 	default:
 		errmsg(afu, OCXL_INVALID_ARGS, "Unknown MMIO type %d", type);
 		return -1;
@@ -388,6 +575,12 @@ size_t ocxl_mmio_size(ocxl_afu_h afu, ocxl_mmio_type type)
 
 	case OCXL_PER_PASID_MMIO:
 		return afu->per_pasid_mmio.length;
+
+	case OCXL_LPC_SYSTEM_MEM:
+		return afu->lpc_mem.length;
+
+	case OCXL_LPC_SPECIAL_PURPOSE_MEM:
+		return afu->special_purpose_mem.length;
 
 	default:
 		errmsg(afu, OCXL_INVALID_ARGS, "Invalid MMIO area requested '%d'", type);

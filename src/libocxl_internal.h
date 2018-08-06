@@ -85,6 +85,8 @@ void ocxl_default_error_handler(ocxl_err error, const char *message);
 void ocxl_default_afu_error_handler(ocxl_afu_h afu, ocxl_err error, const char *message);
 ocxl_err grow_buffer(ocxl_afu *afu, void **buffer, uint16_t *count, size_t size, size_t initial_count);
 ocxl_err global_mmio_open(ocxl_afu *afu);
+ocxl_err lpc_system_mem_open(ocxl_afu *afu);
+ocxl_err lpc_special_purpose_mem_open(ocxl_afu *afu);
 
 extern const char *sys_path;
 #define SYS_PATH_DEFAULT "/sys/class/ocxl"
@@ -182,6 +184,15 @@ struct ocxl_afu {
 	ocxl_mmio_area *mmios;
 	uint16_t mmio_count; /**< The number of valid MMIO regions */
 	uint16_t mmio_max_count; /**< The maximum number of MMIO regions available */
+
+	size_t lpc_mem_size;
+	size_t special_purpose_mem_size;
+
+	int lpc_mem_fd;
+	ocxl_mmio_area lpc_mem;
+
+	int special_purpose_mem_fd;
+	ocxl_mmio_area special_purpose_mem;
 
 	uint32_t pasid;
 

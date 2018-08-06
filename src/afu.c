@@ -238,6 +238,16 @@ static void afu_init(ocxl_afu *afu)
 	afu->mmio_count = 0;
 	afu->mmio_max_count = 0;
 
+	afu->lpc_mem_fd = -1;
+	afu->lpc_mem.start = NULL;
+	afu->lpc_mem.length = 0;
+	afu->lpc_mem.type = OCXL_LPC_SYSTEM_MEM;
+
+	afu->special_purpose_mem_fd = -1;
+	afu->special_purpose_mem.start = NULL;
+	afu->special_purpose_mem.length = 0;
+	afu->special_purpose_mem.type = OCXL_LPC_SPECIAL_PURPOSE_MEM;
+
 	afu->pasid = UINT32_MAX;
 
 	afu->verbose_errors = verbose_errors_all;
@@ -466,6 +476,27 @@ static ocxl_err afu_open(ocxl_afu *afu)
 	afu->per_pasid_mmio.length = metadata.pp_mmio_size;
 	afu->global_mmio.length = metadata.global_mmio_size;
 	afu->pasid = metadata.pasid;
+
+	if (metadata.version >= 1) {
+		afu->lpc_mem.length = metadata.lpc_mem_size;
+		afu->special_purpose_mem.length = metadata.special_purpose_mem_size;
+	}
+
+	if (afu->lpc_mem.length) {
+		rc = lpc_system_mem_open(afu);
+		if (rc != OCXL_OK) {
+			errmsg(NULL, rc, "Could not open LPC system memory descriptor");
+			return rc;
+		}
+	}
+
+	if (afu->special_purpose_mem.length) {
+		rc = lpc_special_purpose_mem_open(afu);
+		if (rc != OCXL_OK) {
+			errmsg(NULL, rc, "Could not open LPC special purpose memory descriptor");
+			return rc;
+		}
+	}
 
 	trace_metadata(afu);
 
@@ -726,6 +757,16 @@ ocxl_err ocxl_afu_close(ocxl_afu_h afu)
 	close(afu->fd);
 	afu->fd = -1;
 	afu->attached = false;
+
+	if (afu->lpc_mem_fd != -1) {
+		close(afu->lpc_mem_fd);
+		afu->lpc_mem_fd = -1;
+	}
+
+	if (afu->special_purpose_mem_fd != -1) {
+		close(afu->special_purpose_mem_fd);
+		afu->special_purpose_mem_fd = -1;
+	}
 
 	if (afu->device_path) {
 		free(afu->device_path);
