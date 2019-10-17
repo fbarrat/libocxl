@@ -125,6 +125,107 @@ void ocxl_afu_get_version(ocxl_afu_h afu, uint8_t *major, uint8_t *minor)
 }
 
 /**
+ * Get the lpc memory size of the AFU.
+ *
+ * Returns the lpc memory size of the AFU, as specified by the AFU implementation.
+ *
+ * @param afu The AFU that holds the lpc memory
+ *
+ * @return the lpc memory size, or 0 if the AFU has no lpc memory
+ */
+uint64_t ocxl_afu_get_lpc_mem_size(ocxl_afu_h afu)
+{
+	return afu->lpc_mem.length;
+}
+
+/**
+ * Make the lpc memory of the AFU online via a numa node.
+ *
+ * @param afu The AFU that holds the lpc memory
+ * @param flags Unused
+ *
+ * @retval OCXL_OK if the lpc memory of the AFU was onlined
+ * @retval OCXL_NO_CONTEXT if the AFU is not open
+ * @retval OCXL_ALREADY_DONE if the lpc memory is already online
+ */
+ocxl_err ocxl_afu_online_lpc_mem(ocxl_afu_h afu, uint64_t flags)
+{
+        ocxl_err rc;
+
+	if (flags)
+		return OCXL_INVALID_ARGS;
+
+	if (afu->fd == -1) {
+		rc = OCXL_NO_CONTEXT;
+		errmsg(afu, rc, "Attempted to online lpc memory for a closed AFU context");
+		return rc;
+	}
+
+	rc = ioctl(afu->fd, OCXL_IOCTL_ONLINE_LPC_MEM, 0);
+	if (rc == -EPERM) {
+		rc = OCXL_ALREADY_DONE;
+		errmsg(afu, rc, "AFU lpc memory is already online");
+	}
+	return rc;
+}
+
+/**
+ * Make the lpc memory of the AFU offline via a numa node.
+ *
+ * @param afu The AFU that holds the lpc memory
+ *
+ * @retval OCXL_OK if the lpc memory of the AFU was offlined
+ * @retval OCXL_NO_CONTEXT if the AFU is not open
+ * @retval OCXL_ALREADY_DONE if the lpc memory is already offline
+ */
+ocxl_err ocxl_afu_offline_lpc_mem(ocxl_afu_h afu)
+{
+        ocxl_err rc;
+
+	if (afu->fd == -1) {
+		rc = OCXL_NO_CONTEXT;
+		errmsg(afu, rc, "Attempted to offline lpc memory for a closed AFU context");
+		return rc;
+	}
+
+	rc = ioctl(afu->fd, OCXL_IOCTL_OFFLINE_LPC_MEM);
+	if (rc == -EPERM) {
+		rc = OCXL_ALREADY_DONE;
+		errmsg(afu, rc, "AFU lpc memory is already offline");
+	}
+	return rc;
+}
+
+/**
+ * Get the AFU onlined lpc memory numa nodeid.
+ *
+ * Returns the numa nodeid of the onlined lpc memory of the AFU
+ *
+ * @param afu The AFU that holds the lpc memory
+ *
+ * @return the lpc memory numa nodeid, or 0 if lpc memory is not online
+ */
+uint32_t ocxl_afu_get_lpc_mem_nodeid(ocxl_afu_h afu)
+{
+	struct ocxl_ioctl_lpc_mem_info info;
+
+	if (afu->fd == -1) {
+		ocxl_err rc = OCXL_NO_CONTEXT;
+		errmsg(afu, rc, "Attempted to get numa nodeid for a closed AFU context");
+		return rc;
+	}
+	memset(&info, '\0', sizeof(info));
+
+	if (ioctl(afu->fd, OCXL_IOCTL_GET_LPC_MEM_INFO, &info)) {
+		ocxl_err rc = OCXL_NO_DEV;
+		errmsg(NULL, rc, "OCXL_IOCTL_GET_LPC_MEM_INFO failed %d:%s", errno, strerror(errno));
+		return rc;
+	}
+
+	return info.nodeid;
+}
+
+/**
  * @}
  *
  * @addtogroup ocxl_messages

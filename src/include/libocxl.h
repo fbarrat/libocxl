@@ -177,6 +177,7 @@ const char *ocxl_afu_get_device_path(ocxl_afu_h afu) LIBOCXL_WARN_UNUSED;
 const char *ocxl_afu_get_sysfs_path(ocxl_afu_h afu) LIBOCXL_WARN_UNUSED;
 void ocxl_afu_get_version(ocxl_afu_h afu, uint8_t *major, uint8_t *minor);
 uint32_t ocxl_afu_get_pasid(ocxl_afu_h afu) LIBOCXL_WARN_UNUSED;
+uint64_t ocxl_afu_get_lpc_mem_size(ocxl_afu_h afu) LIBOCXL_WARN_UNUSED;
 
 /* AFU operations */
 ocxl_err ocxl_afu_open_specific(const char *name, const char *physical_function, int16_t afu_index,
@@ -188,6 +189,11 @@ void ocxl_afu_set_error_message_handler(ocxl_afu_h afu, void (*handler)(ocxl_afu
                                         const char *message));
 ocxl_err ocxl_afu_close(ocxl_afu_h afu);
 ocxl_err ocxl_afu_attach(ocxl_afu_h afu, uint64_t flags) LIBOCXL_WARN_UNUSED;
+
+/* AFU lpc operations */
+ocxl_err ocxl_afu_online_lpc_mem(ocxl_afu_h afu, uint64_t flags) LIBOCXL_WARN_UNUSED;
+ocxl_err ocxl_afu_offline_lpc_mem(ocxl_afu_h afu) LIBOCXL_WARN_UNUSED;
+uint32_t ocxl_afu_get_lpc_mem_nodeid(ocxl_afu_h afu) LIBOCXL_WARN_UNUSED;
 
 /* irq.c */
 /* AFU IRQ functions */
