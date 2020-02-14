@@ -12,7 +12,7 @@ SONAMEOPT = -Wl,-soname,$(LIBSONAME)
 
 DOCDIR = docs
 
-all: check_ocxl_header obj/$(LIBSONAME) obj/libocxl.so obj/libocxl.a sampleobj/memcpy afuobj/ocxl_memcpy afuobj/ocxl_afp3 afuobj/ocxl_afp3_latency sampleobj/lpc
+all: check_ocxl_header obj/$(LIBSONAME) obj/libocxl.so obj/libocxl.a sampleobj/memcpy afuobj/ocxl_memcpy afuobj/ocxl_afp3 afuobj/ocxl_afp3_latency sampleobj/lpc_mmap sampleobj/lpc_numa_enable
 
 HAS_WGET = $(shell /bin/which wget > /dev/null 2>&1 && echo y || echo n)
 HAS_CURL = $(shell /bin/which curl > /dev/null 2>&1 && echo y || echo n)
@@ -65,8 +65,11 @@ afuobj/ocxl_afp3: afuobj/ocxl_afp3.o-afp
 afuobj/ocxl_afp3_latency: afuobj/ocxl_afp3_latency.o-afp
 	$(call Q,CC, $(CC) $(CFLAGS) $(LDFLAGS) -o afuobj/ocxl_afp3_latency afuobj/ocxl_afp3_latency.o-afp obj/libocxl.a, afuobj/ocxl_afp3_latency)
 
-sampleobj/lpc: sampleobj/lpc.o-lpc
-	$(call Q,CC, $(CC) $(CFLAGS) $(LDFLAGS) -o sampleobj/lpc sampleobj/lpc.o-lpc obj/libocxl.a, sampleobj/lpc)
+sampleobj/lpc_mmap: sampleobj/lpc_mmap.o-lpc
+	$(call Q,CC, $(CC) $(CFLAGS) $(LDFLAGS) -o sampleobj/lpc_mmap sampleobj/lpc_mmap.o-lpc obj/libocxl.a, sampleobj/lpc_mmap)
+
+sampleobj/lpc_numa_enable: sampleobj/lpc_numa_enable.o-lpc
+	$(call Q,CC, $(CC) $(CFLAGS) $(LDFLAGS) -o sampleobj/lpc_numa_enable sampleobj/lpc_numa_enable.o-lpc obj/libocxl.a, sampleobj/lpc_numa_enable)
 
 testobj:
 	mkdir testobj
