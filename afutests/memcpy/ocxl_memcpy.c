@@ -32,7 +32,8 @@
 #define LOG_ERR(pid, fmt, x...) fprintf(stderr, "Process %d: " fmt, pid, ##x)
 #define LOG_INF(pid, fmt, x...) printf("Process %d: " fmt, pid, ##x)
 
-#define AFU_NAME "IBM,MEMCPY3"
+#define AFU_MEMCPY_NAME "IBM,MEMCPY3"
+#define AFU_ATC_NAME "IBM,ATC4"
 #define AFU_MAX_PROCESSES 512
 
 #define CACHELINESIZE	128
@@ -58,6 +59,7 @@
 
 /* global mmio registers */
 #define MEMCPY_AFU_GLOBAL_CFG	0
+#define MEMCPY_AFU_GLOBAL_CFG2	0x8
 #define MEMCPY_AFU_GLOBAL_TRACE	0x20
 
 /* per-process mmio registers */
@@ -92,6 +94,7 @@ struct memcpy_weq {
 };
 
 struct memcpy_test_args {
+	int version;
 	int loop_count;
 	int size;
 	int irq;
@@ -108,6 +111,15 @@ struct memcpy_test_args {
 	char *lock;
 	char *counter;
 };
+
+const char *afu_name(int version)
+{
+	if (version == 3)
+		return AFU_MEMCPY_NAME;
+	if (version == 4)
+		return AFU_ATC_NAME;
+	return NULL;
+}
 
 int memcpy3_queue_length(size_t queue_size)
 {
@@ -161,7 +173,7 @@ int global_setup(struct memcpy_test_args *args)
 	if (args->device)
 		err = ocxl_afu_open_from_dev(args->device, &afu_h);
 	else
-		err = ocxl_afu_open(AFU_NAME, &afu_h);
+		err = ocxl_afu_open(afu_name(args->version), &afu_h);
 
 	if (err != OCXL_OK) {
 		LOG_ERR(pid, "ocxl_afu_open() failed: %d\n", err);
@@ -184,6 +196,9 @@ int global_setup(struct memcpy_test_args *args)
 	ocxl_mmio_read64(global_mmio, MEMCPY_AFU_GLOBAL_CFG, OCXL_MMIO_LITTLE_ENDIAN, &cfg);
 	LOG_INF(pid, "AFU config = %#lx\n", cfg);
 
+	ocxl_mmio_read64(global_mmio, MEMCPY_AFU_GLOBAL_CFG2, OCXL_MMIO_LITTLE_ENDIAN, &cfg);
+	LOG_INF(pid, "AFU config2 = %#lx\n", cfg);
+
 	reg = 0x8008008000000000;
 	err = ocxl_mmio_write64(global_mmio, MEMCPY_AFU_GLOBAL_TRACE, OCXL_MMIO_LITTLE_ENDIAN, reg);
 	if (err != OCXL_OK) {
@@ -191,7 +206,8 @@ int global_setup(struct memcpy_test_args *args)
 		return -1;
 	}
 
-	reg = 0x000000000007100B;
+	reg = 0x00000000003FFFF3;
+//	reg = 0x000000000007100B;
 	err = ocxl_mmio_write64(global_mmio, MEMCPY_AFU_GLOBAL_TRACE, OCXL_MMIO_LITTLE_ENDIAN, reg);
 	if (err != OCXL_OK) {
 		LOG_ERR(pid, "global ocxl_mmio_write64(trace) failed: %d\n", err);
@@ -407,7 +423,7 @@ int test_afu_memcpy(struct memcpy_test_args *args)
 	if (args->device)
 		err = ocxl_afu_open_from_dev(args->device, &afu_h);
 	else
-		err = ocxl_afu_open(AFU_NAME, &afu_h);
+		err = ocxl_afu_open(afu_name(args->version), &afu_h);
 
 	if (err != OCXL_OK) {
 		LOG_ERR(pid, "ocxl_afu_open() failed: %d\n", err);
@@ -679,6 +695,7 @@ void usage(char *name)
 	fprintf(stderr, "\t-S\t\tOperate on shared memory\n");
 	fprintf(stderr, "\t-s <bufsize>\tCopy this number of bytes (default 2048)\n");
 	fprintf(stderr, "\t-t <timeout>\tSeconds to wait for the AFU to signal completion\n");
+	fprintf(stderr, "\t-v <version>\t3=MEMCPY 4=ATC\n");
 	exit(1);
 }
 
@@ -688,6 +705,7 @@ int main(int argc, char *argv[])
 	int rc, c, i, j, processes = 1;
 	pid_t pid, failing;
 
+	args.version = 3;
 	args.loop_count = 1;
 	args.size = 2048;
 	args.irq = 0;
@@ -704,7 +722,7 @@ int main(int argc, char *argv[])
 	args.counter = NULL;
 
 	while (1) {
-		c = getopt(argc, argv, "+aAhl:p:Ss:Iit:rd:w");
+		c = getopt(argc, argv, "+aAhl:p:Ss:Iit:rd:wv:");
 		if (c < 0)
 			break;
 		switch (c) {
@@ -747,6 +765,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'S':
 			args.shared_mem = 1;
+			break;
+		case 'v':
+			args.version = atoi(optarg);
 			break;
 		}
 	}
@@ -793,6 +814,11 @@ int main(int argc, char *argv[])
 	/* max buffer size supported by AFU */
 	if (args.size > 2048 || args.size % 64) {
 		fprintf(stderr, "invalid buffer size %d\n", args.size);
+		return -1;
+	}
+
+	if (args.version != 3 && args.version != 4) {
+		fprintf(stderr, "invalid version %d\n", args.version);
 		return -1;
 	}
 
