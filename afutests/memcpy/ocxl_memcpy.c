@@ -59,9 +59,18 @@
 #define MEMCPY_WE_CMD_TRANSLATE_TOUCH	6
 
 /* global mmio registers */
-#define MEMCPY_AFU_GLOBAL_CFG	0
-#define MEMCPY_AFU_GLOBAL_CFG2	0x8
-#define MEMCPY_AFU_GLOBAL_TRACE	0x20
+#define MEMCPY_AFU_GLOBAL_CFG	   0x0
+#define MEMCPY_AFU_GLOBAL_CFG2	   0x8
+#define MEMCPY_AFU_GLOBAL_TRACE	   0x20
+#define MEMCPY_AFU_GLOBAL_DSP_CTRL 0x78
+#define MEMCPY_AFU_GLOBAL_DSP_REG0 0x80
+#define MEMCPY_AFU_GLOBAL_DSP_REG1 0x88
+#define MEMCPY_AFU_GLOBAL_DSP_REG2 0x90
+#define MEMCPY_AFU_GLOBAL_DSP_REG3 0x98
+#define MEMCPY_AFU_GLOBAL_DSP_REG4 0xA0
+#define MEMCPY_AFU_GLOBAL_DSP_REG5 0xA8
+#define MEMCPY_AFU_GLOBAL_DSP_REG6 0xB0
+#define MEMCPY_AFU_GLOBAL_DSP_REG7 0xB8
 
 /* per-process mmio registers */
 #define MEMCPY_AFU_PP_WED	0
@@ -112,6 +121,7 @@ struct memcpy_test_args {
 	char *lock;
 	char *counter;
 	int posted;
+	char *trace_file;
 };
 
 const char *afu_name(int version)
@@ -163,13 +173,118 @@ struct memcpy_work_element *memcpy3_add_we(struct memcpy_weq *weq, struct memcpy
 	return new_we;
 }
 
-int global_setup(struct memcpy_test_args *args)
+int setup_trace(ocxl_mmio_h global_mmio)
 {
 	ocxl_err err;
+	uint64_t reg;
+	pid_t pid = getpid();
+
+	reg = 0x8008008000000000;
+	err = ocxl_mmio_write64(global_mmio, MEMCPY_AFU_GLOBAL_TRACE,
+				OCXL_MMIO_LITTLE_ENDIAN, reg);
+	if (err != OCXL_OK) {
+		LOG_ERR(pid, "cannot reset trace arrays: %d\n", err);
+		return -1;
+	}
+
+	reg = 0x00000000003FFFF3;
+	err = ocxl_mmio_write64(global_mmio, MEMCPY_AFU_GLOBAL_TRACE,
+				OCXL_MMIO_LITTLE_ENDIAN, reg);
+	if (err != OCXL_OK) {
+		LOG_ERR(pid, "cannot enable traces: %d\n", err);
+		return -1;
+	}
+	LOG_INF(pid, "traces reset and rearmed\n");
+	return 0;
+}
+
+int dump_trace(ocxl_mmio_h global_mmio, char *filename)
+{
+	ocxl_err err;
+	uint64_t reg1, reg2, reg3;
+	pid_t pid = getpid();
+	int i;
+	FILE *f;
+
+	// adapted from dumpMCPTrace.py which uses cronus to do the same thing
+	LOG_INF(pid, "dumping trace buffer to file %s\n", filename);
+	f = fopen(filename, "w+");
+	if (!f) {
+		LOG_ERR(pid, "can't open file %s: %d\n", filename, errno);
+		return -1;
+	}
+
+	// first, stop the trace capture
+	reg1 = 0;
+	err = ocxl_mmio_write64(global_mmio, MEMCPY_AFU_GLOBAL_TRACE,
+				OCXL_MMIO_LITTLE_ENDIAN, reg1);
+	if (err != OCXL_OK) {
+		LOG_ERR(pid, "cannot stop traces: %d\n", err);
+		return -1;
+	}
+
+	fprintf(f, "Printing CMDI/RSPO Trace Array\n");
+	reg1 = 0x0000000030000051;
+	err = ocxl_mmio_write64(global_mmio, MEMCPY_AFU_GLOBAL_DSP_CTRL,
+				OCXL_MMIO_LITTLE_ENDIAN, reg1);
+	if (err != OCXL_OK) {
+		LOG_ERR(pid, "cannot dump traces: %d\n", err);
+		return -1;
+	}
+	for (i = 0; i < 512; i++) {
+		ocxl_mmio_read64(global_mmio, MEMCPY_AFU_GLOBAL_DSP_REG7,
+				 OCXL_MMIO_LITTLE_ENDIAN, &reg1);
+		ocxl_mmio_read64(global_mmio, MEMCPY_AFU_GLOBAL_DSP_REG6,
+				 OCXL_MMIO_LITTLE_ENDIAN, &reg2);
+		ocxl_mmio_read64(global_mmio, MEMCPY_AFU_GLOBAL_DSP_REG5,
+				 OCXL_MMIO_LITTLE_ENDIAN, &reg3);
+		fprintf(f, "A %03d %016lX%016lX%016lX\n", i, reg1, reg2, reg3);
+	}
+
+	fprintf(f, "Printing RSPI Trace Array\n");
+	reg1 = 0x0000000030000031;
+	err = ocxl_mmio_write64(global_mmio, MEMCPY_AFU_GLOBAL_DSP_CTRL,
+				OCXL_MMIO_LITTLE_ENDIAN, reg1);
+	if (err != OCXL_OK) {
+		LOG_ERR(pid, "cannot dump traces: %d\n", err);
+		return -1;
+	}
+	for (i = 0; i < 512; i++) {
+		ocxl_mmio_read64(global_mmio, MEMCPY_AFU_GLOBAL_DSP_REG4,
+				 OCXL_MMIO_LITTLE_ENDIAN, &reg1);
+		ocxl_mmio_read64(global_mmio, MEMCPY_AFU_GLOBAL_DSP_REG3,
+				 OCXL_MMIO_LITTLE_ENDIAN, &reg2);
+		fprintf(f, "B %03d %016lX%016lX\n", i, reg1, reg2);
+	}
+
+	fprintf(f, "Printing CMDO Trace Array\n");
+	reg1 = 0x0000000030000001;
+	err = ocxl_mmio_write64(global_mmio, MEMCPY_AFU_GLOBAL_DSP_CTRL,
+				OCXL_MMIO_LITTLE_ENDIAN, reg1);
+	if (err != OCXL_OK) {
+		LOG_ERR(pid, "cannot dump traces: %d\n", err);
+		return -1;
+	}
+	for (i = 0; i < 512; i++) {
+		ocxl_mmio_read64(global_mmio, MEMCPY_AFU_GLOBAL_DSP_REG2,
+				 OCXL_MMIO_LITTLE_ENDIAN, &reg1);
+		ocxl_mmio_read64(global_mmio, MEMCPY_AFU_GLOBAL_DSP_REG1,
+				 OCXL_MMIO_LITTLE_ENDIAN, &reg2);
+		ocxl_mmio_read64(global_mmio, MEMCPY_AFU_GLOBAL_DSP_REG0,
+				 OCXL_MMIO_LITTLE_ENDIAN, &reg3);
+		fprintf(f, "C %03d %016lX%016lX%016lX\n", i, reg1, reg2, reg3);
+	}
+	return 0;
+}
+
+int global_setup(struct memcpy_test_args *args)
+{
 	ocxl_afu_h afu_h;
-	uint64_t reg, cfg;
-	pid_t pid;
 	ocxl_mmio_h global_mmio;
+	ocxl_err err;
+	uint64_t cfg, cfg2;
+	pid_t pid;
+	int rc;
 
 	pid = getpid();
 	if (args->device)
@@ -188,36 +303,44 @@ int global_setup(struct memcpy_test_args *args)
 		return -1;
 	}
 
-	// cfg = 0;
+	cfg = 0;
+	// cfg |= 0xFFFFFFFEull << 32; /* disable all engines except 1 */
 	// cfg |= (1ull << 3); /* disable 256B ops */
-	// cfg &= ~((0xFFFFFFFFull) << 32);
-	// cfg |=   (0xFFFFFFFCull) << 32;
 	// cfg |= (1ull << 30); /* disable back-off timers */
 	// cfg |= (3ull << 17); /* xtouch enable */
 	// cfg |= (0b111111) << 8; /* all bypass */
-	ocxl_mmio_read64(global_mmio, MEMCPY_AFU_GLOBAL_CFG, OCXL_MMIO_LITTLE_ENDIAN, &cfg);
+	err = ocxl_mmio_write64(global_mmio, MEMCPY_AFU_GLOBAL_CFG,
+				OCXL_MMIO_LITTLE_ENDIAN, cfg);
+	if (err != OCXL_OK) {
+		LOG_ERR(pid, "cannot set config register: %d\n", err);
+		return -1;
+	}
+
+	ocxl_mmio_read64(global_mmio, MEMCPY_AFU_GLOBAL_CFG,
+			 OCXL_MMIO_LITTLE_ENDIAN, &cfg);
 	LOG_INF(pid, "AFU config = %#lx\n", cfg);
 
-	ocxl_mmio_read64(global_mmio, MEMCPY_AFU_GLOBAL_CFG2, OCXL_MMIO_LITTLE_ENDIAN, &cfg);
-	LOG_INF(pid, "AFU config2 = %#lx\n", cfg);
-
-	reg = 0x8008008000000000;
-	err = ocxl_mmio_write64(global_mmio, MEMCPY_AFU_GLOBAL_TRACE, OCXL_MMIO_LITTLE_ENDIAN, reg);
+	cfg2 = 0;
+	// cfg2 |= 1ull << 40; /* ATC cache disable */
+	err = ocxl_mmio_write64(global_mmio, MEMCPY_AFU_GLOBAL_CFG2,
+				OCXL_MMIO_LITTLE_ENDIAN, cfg2);
 	if (err != OCXL_OK) {
-		LOG_ERR(pid, "global ocxl_mmio_write64(trace) failed: %d\n", err);
+		LOG_ERR(pid, "cannot set config2 register: %d\n", err);
 		return -1;
 	}
 
-	reg = 0x00000000003FFFF3;
-//	reg = 0x000000000007100B;
-	err = ocxl_mmio_write64(global_mmio, MEMCPY_AFU_GLOBAL_TRACE, OCXL_MMIO_LITTLE_ENDIAN, reg);
-	if (err != OCXL_OK) {
-		LOG_ERR(pid, "global ocxl_mmio_write64(trace) failed: %d\n", err);
-		return -1;
+	ocxl_mmio_read64(global_mmio, MEMCPY_AFU_GLOBAL_CFG2,
+			 OCXL_MMIO_LITTLE_ENDIAN, &cfg2);
+	LOG_INF(pid, "AFU config2 = %#lx\n", cfg2);
+
+	if (args->trace_file) {
+		rc = dump_trace(global_mmio, args->trace_file);
+	} else {
+		rc = setup_trace(global_mmio);
 	}
-	LOG_INF(pid, "traces reset and rearmed\n");
+
 	ocxl_afu_close(afu_h);
-	return 0;
+	return rc;
 }
 
 int shm_create(struct memcpy_test_args *args)
@@ -700,6 +823,7 @@ void usage(char *name)
 	fprintf(stderr, "\t-t <timeout>\tSeconds to wait for the AFU to signal completion\n");
 	fprintf(stderr, "\t-v <version>\t3=MEMCPY 4=ATC\n");
 	fprintf(stderr, "\t-P\t\tUse posted commands\n");
+	fprintf(stderr, "\t-D <file>\tDump AFU trace buffer to file and exit\n");
 	exit(1);
 }
 
@@ -725,9 +849,10 @@ int main(int argc, char *argv[])
 	args.lock = NULL;
 	args.counter = NULL;
 	args.posted = 0;
+	args.trace_file = NULL;
 
 	while (1) {
-		c = getopt(argc, argv, "+aAhl:p:Ss:Iit:rd:wv:P");
+		c = getopt(argc, argv, "+aAhl:p:Ss:Iit:rd:wv:PD:");
 		if (c < 0)
 			break;
 		switch (c) {
@@ -776,6 +901,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'P':
 			args.posted = 1;
+			break;
+		case 'D':
+			args.trace_file = optarg;
 			break;
 		}
 	}
@@ -836,7 +964,7 @@ int main(int argc, char *argv[])
 	}
 
 	rc = global_setup(&args);
-	if (rc)
+	if (rc || args.trace_file)
 		exit(1);
 
 	if (args.atomic_cas) {
