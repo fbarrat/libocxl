@@ -44,9 +44,10 @@
 	((((uint64_t)queue) & 0xfffffffffffff000ULL) |	\
 		(((uint64_t)depth) & 0xfffULL))
 
-#define MEMCPY_WE_CMD(valid, cmd)		\
-	(((valid) & 0x1) |			\
-		(((cmd) & 0x3f) << 2))
+#define MEMCPY_WE_CMD(valid, cmd, posted)		\
+	(((valid) & 0x1) |				\
+	 (((cmd | ((posted) & 0x1) << 3) & 0x3f) << 2))
+
 #define MEMCPY_WE_CMD_VALID	(0x1 << 0)
 #define MEMCPY_WE_CMD_WRAP	(0x1 << 1)
 #define MEMCPY_WE_CMD_COPY		0
@@ -110,6 +111,7 @@ struct memcpy_test_args {
 	int shmid;
 	char *lock;
 	char *counter;
+	int posted;
 };
 
 const char *afu_name(int version)
@@ -377,7 +379,7 @@ int restart_afu(pid_t pid, ocxl_mmio_h pp_mmio)
 int test_afu_memcpy(struct memcpy_test_args *args)
 {
 	uint64_t wed;
-	pid_t pid;
+	pid_t pid, posted = args->posted;
 	int i, t, rc = -1;
 	uint64_t status, afu_irq_ea = 0, err_irq_ea;
 	uint16_t tidr;
@@ -438,7 +440,7 @@ int test_afu_memcpy(struct memcpy_test_args *args)
 
 	/* Setup the atomic compare and swap work element */
 	memset(&atomic_cas_we, 0, sizeof(atomic_cas_we));
-	atomic_cas_we.cmd = MEMCPY_WE_CMD(0, MEMCPY_WE_CMD_ATOMIC);
+	atomic_cas_we.cmd = MEMCPY_WE_CMD(0, MEMCPY_WE_CMD_ATOMIC, posted);
 	atomic_cas_we.length = htole16((uint16_t) sizeof(uint64_t));
 	atomic_cas_we.src = htole64(1);
 	atomic_cas_we.dst = htole64((uintptr_t) dst);
@@ -447,17 +449,18 @@ int test_afu_memcpy(struct memcpy_test_args *args)
 
 	/* Setup the increment work element */
 	memset(&increment_we, 0, sizeof(increment_we));
-	increment_we.cmd = MEMCPY_WE_CMD(0, MEMCPY_WE_CMD_INCREMENT);
+	increment_we.cmd = MEMCPY_WE_CMD(0, MEMCPY_WE_CMD_INCREMENT, posted);
 	increment_we.length = htole16((uint16_t) sizeof(pid_t));
 	increment_we.src = htole64((uintptr_t) src);
 	increment_we.dst = htole64((uintptr_t) dst);
 
 	/* Setup the memcpy work element */
 	memset(&memcpy_we, 0, sizeof(memcpy_we));
-	memcpy_we.cmd = MEMCPY_WE_CMD(0, MEMCPY_WE_CMD_COPY);
+	memcpy_we.cmd = MEMCPY_WE_CMD(0, MEMCPY_WE_CMD_COPY, posted);
 	memcpy_we.length = htole16((uint16_t) args->size);
 	memcpy_we.src = htole64((uintptr_t) src);
 	memcpy_we.dst = htole64((uintptr_t) dst);
+	memcpy_we.cmd_extra = posted ? 0x3 : 0; // required to populate the address translation cache
 
 	/* Setup the interrupt work element */
 	if (args->irq || args->wake_host_thread) {
@@ -472,7 +475,7 @@ int test_afu_memcpy(struct memcpy_test_args *args)
 		memset(&irq_we, 0, sizeof(irq_we));
 		irq_we.src = htole64(afu_irq_ea);
 		if (args->irq)
-			irq_we.cmd = MEMCPY_WE_CMD(1, MEMCPY_WE_CMD_IRQ);
+			irq_we.cmd = MEMCPY_WE_CMD(1, MEMCPY_WE_CMD_IRQ, 0);
 		else {
 			err = ocxl_afu_get_p9_thread_id(afu_h, &tidr);
 			if (err < 0) {
@@ -484,7 +487,7 @@ int test_afu_memcpy(struct memcpy_test_args *args)
 			 * be in the Process Element and the default
 			 * tid value used by AFU
 			 */
-			irq_we.cmd = MEMCPY_WE_CMD(1, MEMCPY_WE_CMD_WAKE_HOST_THREAD);
+			irq_we.cmd = MEMCPY_WE_CMD(1, MEMCPY_WE_CMD_WAKE_HOST_THREAD, 0);
 		}
 	}
 
@@ -696,6 +699,7 @@ void usage(char *name)
 	fprintf(stderr, "\t-s <bufsize>\tCopy this number of bytes (default 2048)\n");
 	fprintf(stderr, "\t-t <timeout>\tSeconds to wait for the AFU to signal completion\n");
 	fprintf(stderr, "\t-v <version>\t3=MEMCPY 4=ATC\n");
+	fprintf(stderr, "\t-P\t\tUse posted commands\n");
 	exit(1);
 }
 
@@ -720,9 +724,10 @@ int main(int argc, char *argv[])
 	args.shmid = -1;
 	args.lock = NULL;
 	args.counter = NULL;
+	args.posted = 0;
 
 	while (1) {
-		c = getopt(argc, argv, "+aAhl:p:Ss:Iit:rd:wv:");
+		c = getopt(argc, argv, "+aAhl:p:Ss:Iit:rd:wv:P");
 		if (c < 0)
 			break;
 		switch (c) {
@@ -768,6 +773,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'v':
 			args.version = atoi(optarg);
+			break;
+		case 'P':
+			args.posted = 1;
 			break;
 		}
 	}
@@ -819,6 +827,11 @@ int main(int argc, char *argv[])
 
 	if (args.version != 3 && args.version != 4) {
 		fprintf(stderr, "invalid version %d\n", args.version);
+		return -1;
+	}
+
+	if (args.version < 4 && args.posted) {
+		fprintf(stderr, "posted commands are not available with this version\n");
 		return -1;
 	}
 
