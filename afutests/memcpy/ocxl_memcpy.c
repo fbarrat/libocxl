@@ -303,7 +303,8 @@ int global_setup(struct memcpy_test_args *args)
 		return -1;
 	}
 
-	cfg = 0;
+	cfg = 1ull << 30; /* disable back-off timers */
+	cfg |= 1ull << 27; /* Xkill_on_pending disable */
 	// cfg |= 0xFFFFFFFEull << 32; /* disable all engines except 1 */
 	// cfg |= (1ull << 3); /* disable 256B ops */
 	// cfg |= (1ull << 30); /* disable back-off timers */
@@ -320,7 +321,7 @@ int global_setup(struct memcpy_test_args *args)
 			 OCXL_MMIO_LITTLE_ENDIAN, &cfg);
 	LOG_INF(pid, "AFU config = %#lx\n", cfg);
 
-	cfg2 = 0;
+	cfg2 = 0x1Full << 27;
 	// cfg2 |= 1ull << 40; /* ATC cache disable */
 	err = ocxl_mmio_write64(global_mmio, MEMCPY_AFU_GLOBAL_CFG2,
 				OCXL_MMIO_LITTLE_ENDIAN, cfg2);
