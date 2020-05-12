@@ -71,6 +71,8 @@
 #define MEMCPY_AFU_GLOBAL_DSP_REG5 0xA8
 #define MEMCPY_AFU_GLOBAL_DSP_REG6 0xB0
 #define MEMCPY_AFU_GLOBAL_DSP_REG7 0xB8
+#define MEMCPY_AFU_GLOBAL_DSP_REG8 0xC0
+#define MEMCPY_AFU_GLOBAL_DSP_REG9 0xC8
 
 /* per-process mmio registers */
 #define MEMCPY_AFU_PP_WED	0
@@ -274,6 +276,23 @@ int dump_trace(ocxl_mmio_h global_mmio, char *filename)
 				 OCXL_MMIO_LITTLE_ENDIAN, &reg3);
 		fprintf(f, "C %03d %016lX%016lX%016lX\n", i, reg1, reg2, reg3);
 	}
+
+	fprintf(f, "Printing VC2 interface Trace Array\n");
+	reg1 = 0x0000000030000081;
+	err = ocxl_mmio_write64(global_mmio, MEMCPY_AFU_GLOBAL_DSP_CTRL,
+				OCXL_MMIO_LITTLE_ENDIAN, reg1);
+	if (err != OCXL_OK) {
+		LOG_ERR(pid, "cannot dump traces: %d\n", err);
+		return -1;
+	}
+	for (i = 0; i < 512; i++) {
+		ocxl_mmio_read64(global_mmio, MEMCPY_AFU_GLOBAL_DSP_REG9,
+				 OCXL_MMIO_LITTLE_ENDIAN, &reg1);
+		ocxl_mmio_read64(global_mmio, MEMCPY_AFU_GLOBAL_DSP_REG8,
+				 OCXL_MMIO_LITTLE_ENDIAN, &reg2);
+		fprintf(f, "D %03d %016lX%016lX\n", i, reg1, reg2);
+	}
+
 	return 0;
 }
 
